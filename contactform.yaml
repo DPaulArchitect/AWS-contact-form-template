@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  This template deploys a contact form, which allows users to hit an api endpoint in your code, and send an email to you via SNS.
+
+Parameters:
+  email:
+    Description: Your contact email for the contact form
+    Type: String
+
+Resources:
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref email
+          Protocol: "email"
+      TopicName: "form"
+
+  
+  ContactFormLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      RoleName: "ContactForm"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "ContactFormPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: "SNS"
+                Effect: "Allow"
+                Action:
+                  - "sns:Publish"
+                Resource:
+                  - !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${SNSTopic.TopicName}"
+              - Sid: "Logging"  
+                Effect: "Allow"
+                Action: 
+                  - "logs:CreateLogGroup"
+                Resource: 
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Sid: "CreateLogStream"  
+                Effect: "Allow"
+                Action: 
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: 
+                  - "*"   
+
+  ContactFormFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "index.lambda_handler"
+      Role: !GetAtt ContactFormLambdaRole.Arn
+      Runtime: "python3.12"
+      Environment:
+        Variables:
+          SNSTopicArn: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${SNSTopic.TopicName}"
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import logging
+
+          # Configure logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              sns = boto3.client('sns')
+              sns_topic_arn = os.environ['SNSTopicArn']
+
+              # Parse the form data from the event body
+              form_data = json.loads(event['body'])
+
+              # Construct the message
+              message = f"New contact form submission:\nName: {form_data['name']}\nEmail: {form_data['email']}\nMessage: {form_data['message']}"
+
+              # Log the form data and message
+              logger.info(f"Form data received: {form_data}")
+              logger.info(f"Constructed message: {message}")
+
+              # Publish the message to the SNS topic
+              try:
+                  response = sns.publish(
+                      TopicArn=sns_topic_arn,
+                      Message=message,
+                      Subject='New Contact Form Submission'
+                  )
+                  logger.info(f"Message published to SNS topic. Response: {response}")
+              except Exception as e:
+                  logger.error(f"Error publishing to SNS topic: {e}", exc_info=True)
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps('Error processing your submission.')
+                  }
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Thank you for your submission!')
+              }
+
+
+    
+          
+      MemorySize: 128
+      Timeout: 183
+      TracingConfig:
+        Mode: "PassThrough"
+      EphemeralStorage:
+        Size: 512
+            
